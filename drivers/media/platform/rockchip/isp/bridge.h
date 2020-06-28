@@ -48,6 +48,7 @@ struct rkisp_bridge_device {
 	wait_queue_head_t done;
 	spinlock_t buf_lock;
 	struct list_head list;
+	struct list_head list_cache;
 	struct rkisp_bridge_buf bufs[BRIDGE_BUF_MAX];
 	struct rkisp_ispp_buf *cur_buf;
 	struct rkisp_ispp_buf *nxt_buf;
@@ -67,4 +68,5 @@ void rkisp_unregister_bridge_subdev(struct rkisp_device *dev);
 void rkisp_bridge_isr(u32 *mis_val, struct rkisp_device *dev);
 void rkisp_get_bridge_sd(struct platform_device *dev,
 			 struct v4l2_subdev **sd);
+int rkisp_bridge_send_buf(struct rkisp_device *dev, u32 mode, u32 times);
 #endif

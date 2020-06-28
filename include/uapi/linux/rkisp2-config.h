@@ -149,11 +149,18 @@
 
 #define ISP2X_THUNDERBOOT_VIDEO_BUF_NUM	30
 
+enum isp2x_trigger_mode {
+	TRIGGER_START,
+	TRIGGER_END,
+	TRIGGER_TRY,
+};
+
 struct isp2x_csi_trigger {
 	/* timestamp in ns */
 	u64 frame_timestamp;
 	u32 frame_id;
 	int times;
+	enum isp2x_trigger_mode mode;
 } __attribute__ ((packed));
 
 enum isp2x_csi_memory {

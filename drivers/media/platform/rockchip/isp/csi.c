@@ -423,7 +423,7 @@ int rkisp_csi_config_patch(struct rkisp_device *dev)
  * for hdr read back mode, rawrd read back data
  * this will update rawrd base addr to shadow.
  */
-void rkisp_trigger_read_back(struct rkisp_csi_device *csi, u8 dma2frm)
+void rkisp_trigger_read_back(struct rkisp_csi_device *csi, u8 dma2frm, bool is_try)
 {
 	struct rkisp_device *dev = csi->ispdev;
 	void __iomem *addr = dev->base_addr + CSI2RX_CTRL0;
@@ -447,7 +447,8 @@ void rkisp_trigger_read_back(struct rkisp_csi_device *csi, u8 dma2frm)
 	}
 
 	/* configure hdr params in rdbk mode */
-	rkisp_params_cfg(params_vdev, cur_frame_id, dma2frm + 1);
+	if (!is_try)
+		rkisp_params_cfg(params_vdev, cur_frame_id, dma2frm + 1);
 
 	/* not using isp V_START irq to generate sof event */
 	csi->filt_state[CSI_F_VS] = dma2frm + 1;
@@ -469,7 +470,7 @@ int rkisp_csi_trigger_event(struct rkisp_csi_device *csi, void *arg)
 	unsigned long lock_flags = 0;
 	int times = -1;
 
-	if (!IS_HDR_RDBK(dev->hdr.op_mode))
+	if (!IS_HDR_RDBK(dev->hdr.op_mode) || dev->dmarx_dev.trigger != T_MANUAL)
 		return 0;
 
 	spin_lock_irqsave(&csi->rdbk_lock, lock_flags);
@@ -520,7 +521,7 @@ end:
 	spin_unlock_irqrestore(&csi->rdbk_lock, lock_flags);
 
 	if (times >= 0)
-		rkisp_trigger_read_back(csi, times);
+		rkisp_trigger_read_back(csi, times, false);
 	return 0;
 }
 

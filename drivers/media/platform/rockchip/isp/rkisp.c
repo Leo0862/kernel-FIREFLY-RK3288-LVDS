@@ -1836,6 +1836,7 @@ static long rkisp_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 	struct rkisp_thunderboot_resmem *resmem;
 	struct rkisp_thunderboot_resmem_head *head;
 	void *resmem_va;
+	struct isp2x_csi_trigger *trigger;
 	long ret = 0;
 
 	if (!arg && cmd != RKISP_CMD_FREE_SHARED_BUF)
@@ -1843,7 +1844,11 @@ static long rkisp_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 
 	switch (cmd) {
 	case RKISP_CMD_TRIGGER_READ_BACK:
-		rkisp_csi_trigger_event(&isp_dev->csi_dev, arg);
+		trigger = (struct isp2x_csi_trigger *)arg;
+		if (trigger->mode == TRIGGER_START)
+			ret = rkisp_csi_trigger_event(&isp_dev->csi_dev, arg);
+		else
+			ret = rkisp_bridge_send_buf(isp_dev, trigger->mode, trigger->times);
 		break;
 	case RKISP_CMD_CSI_MEMORY_MODE:
 		if (*((int *)arg) == CSI_MEM_BYTE_BE)

@@ -88,7 +88,7 @@ int rkisp_register_csi_subdev(struct rkisp_device *dev,
 void rkisp_unregister_csi_subdev(struct rkisp_device *dev);
 
 int rkisp_csi_config_patch(struct rkisp_device *dev);
-void rkisp_trigger_read_back(struct rkisp_csi_device *csi, u8 dma2frm);
+void rkisp_trigger_read_back(struct rkisp_csi_device *csi, u8 dma2frm, bool is_try);
 int rkisp_csi_trigger_event(struct rkisp_csi_device *csi, void *arg);
 void rkisp_csi_sof(struct rkisp_device *dev, u8 id);
 #endif

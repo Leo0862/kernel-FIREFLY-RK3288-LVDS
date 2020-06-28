@@ -58,7 +58,14 @@ static int frame_end(struct rkisp_bridge_device *dev)
 		if (!ns)
 			ns = ktime_get_ns();
 		dev->cur_buf->frame_timestamp = ns;
-		v4l2_subdev_call(sd, video, s_rx_buffer, dev->cur_buf, NULL);
+		if (IS_HDR_RDBK(dev->ispdev->hdr.op_mode) &&
+		    dev->ispdev->dmarx_dev.trigger == T_MANUAL) {
+			spin_lock_irqsave(&dev->buf_lock, lock_flags);
+			list_add_tail(&dev->cur_buf->list, &dev->list_cache);
+			spin_unlock_irqrestore(&dev->buf_lock, lock_flags);
+		} else {
+			v4l2_subdev_call(sd, video, s_rx_buffer, dev->cur_buf, NULL);
+		}
 		dev->cur_buf = NULL;
 	}
 
@@ -261,8 +268,10 @@ static void free_bridge_buf(struct rkisp_bridge_device *dev)
 {
 	struct rkisp_bridge_buf *buf;
 	struct rkisp_ispp_buf *dbufs;
+	unsigned long lock_flags = 0;
 	int i, j;
 
+	spin_lock_irqsave(&dev->buf_lock, lock_flags);
 	if (dev->cur_buf) {
 		list_add_tail(&dev->cur_buf->list, &dev->list);
 		if (dev->cur_buf == dev->nxt_buf)
@@ -280,6 +289,13 @@ static void free_bridge_buf(struct rkisp_bridge_device *dev)
 				struct rkisp_ispp_buf, list);
 		list_del(&dbufs->list);
 	}
+
+	while (!list_empty(&dev->list_cache)) {
+		dbufs = list_first_entry(&dev->list_cache,
+				struct rkisp_ispp_buf, list);
+		list_del(&dbufs->list);
+	}
+	spin_unlock_irqrestore(&dev->buf_lock, lock_flags);
 
 	for (i = 0; i < BRIDGE_BUF_MAX; i++) {
 		buf = &dev->bufs[i];
@@ -686,30 +702,34 @@ static struct v4l2_subdev_ops bridge_v4l2_ops = {
 	.pad = &bridge_pad_ops,
 };
 
+static void rawrd_end(struct rkisp_device *dev)
+{
+	u32 val = 0;
+
+	/* dmarx isr is unreliable, MI frame end to replace it */
+	switch (dev->hdr.op_mode) {
+	case HDR_RDBK_FRAME3://for rd1 rd0 rd2
+		val |= RAW1_RD_FRAME;
+		/* FALLTHROUGH */
+	case HDR_RDBK_FRAME2://for rd0 rd2
+		val |= RAW0_RD_FRAME;
+		/* FALLTHROUGH */
+	default:// for rd2
+		val |= RAW2_RD_FRAME;
+		/* FALLTHROUGH */
+	}
+	rkisp2_rawrd_isr(val, dev);
+}
+
 void rkisp_bridge_isr(u32 *mis_val, struct rkisp_device *dev)
 {
 	struct rkisp_bridge_device *bridge = &dev->br_dev;
 	void __iomem *base = dev->base_addr;
-	u32 val = 0;
 
-	/* dmarx isr is unreliable, MI frame end to replace it */
+	/* read back internal mode */
 	if (*mis_val & (MI_MP_FRAME | MI_MPFBC_FRAME) &&
-	    IS_HDR_RDBK(dev->hdr.op_mode) &&
-	    dev->dmarx_dev.trigger == T_MANUAL) {
-		switch (dev->hdr.op_mode) {
-		case HDR_RDBK_FRAME3://for rd1 rd0 rd2
-			val |= RAW1_RD_FRAME;
-			/* FALLTHROUGH */
-		case HDR_RDBK_FRAME2://for rd0 rd2
-			val |= RAW0_RD_FRAME;
-			/* FALLTHROUGH */
-		default:// for rd2
-			val |= RAW2_RD_FRAME;
-			/* FALLTHROUGH */
-		}
-		rkisp2_rawrd_isr(val, dev);
-		rkisp_csi_trigger_event(&dev->csi_dev, NULL);
-	}
+	    IS_HDR_RDBK(dev->hdr.op_mode) && !dev->dmarx_dev.trigger)
+		rawrd_end(dev);
 
 	if (!bridge->en || !bridge->cfg ||
 	    (bridge->cfg &&
@@ -728,6 +748,39 @@ void rkisp_bridge_isr(u32 *mis_val, struct rkisp_device *dev)
 	} else if (!(bridge->work_mode & ISP_ISPP_QUICK)) {
 		frame_end(bridge);
 	}
+}
+
+int rkisp_bridge_send_buf(struct rkisp_device *dev, u32 mode, u32 times)
+{
+	struct v4l2_subdev *sd = v4l2_get_subdev_hostdata(&dev->br_dev.sd);
+	struct rkisp_ispp_buf *buf = NULL;
+	unsigned long lock_flags = 0;
+
+	spin_lock_irqsave(&dev->br_dev.buf_lock, lock_flags);
+	if (!list_empty(&dev->br_dev.list_cache)) {
+		buf = list_first_entry(&dev->br_dev.list_cache,
+				       struct rkisp_ispp_buf, list);
+		list_del(&buf->list);
+	}
+	spin_unlock_irqrestore(&dev->br_dev.buf_lock, lock_flags);
+	if (!buf || !sd)
+		return -EINVAL;
+
+	if (!IS_HDR_RDBK(dev->hdr.op_mode) || dev->dmarx_dev.trigger != T_MANUAL)
+		return 0;
+
+	if (!(dev->isp_state & ISP_START))
+		return -EFAULT;
+	if (mode == TRIGGER_TRY) {
+		list_add_tail(&buf->list, &dev->br_dev.list);
+		rkisp_trigger_read_back(&dev->csi_dev, times, true);
+	} else if (mode == TRIGGER_END) {
+		rawrd_end(dev);
+		v4l2_subdev_call(sd, video, s_rx_buffer, buf, NULL);
+		rkisp_csi_trigger_event(&dev->csi_dev, NULL);
+	}
+
+	return 0;
 }
 
 int rkisp_register_bridge_subdev(struct rkisp_device *dev,
@@ -770,6 +823,7 @@ int rkisp_register_bridge_subdev(struct rkisp_device *dev,
 	init_waitqueue_head(&bridge->done);
 	spin_lock_init(&bridge->buf_lock);
 	INIT_LIST_HEAD(&bridge->list);
+	INIT_LIST_HEAD(&bridge->list_cache);
 	return ret;
 
 free_media:
